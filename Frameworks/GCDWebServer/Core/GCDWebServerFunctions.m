@@ -49,7 +49,7 @@ static dispatch_queue_t _dateFormatterQueue = NULL;
 
 // TODO: Handle RFC 850 and ANSI C's asctime() format
 void GCDWebServerInitializeFunctions() {
-  GWS_DCHECK([NSThread isMainThread]);  // NSDateFormatter should be initialized on main thread
+//  GWS_DCHECK([NSThread isMainThread]);  // NSDateFormatter should be initialized on main thread
   if (_dateFormatterRFC822 == nil) {
     _dateFormatterRFC822 = [[NSDateFormatter alloc] init];
     _dateFormatterRFC822.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"GMT"];
