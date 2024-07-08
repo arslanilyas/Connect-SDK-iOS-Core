@@ -219,18 +219,18 @@ static void _ExecuteMainThreadRunLoopSources() {
 
 // Always called on main thread
 - (void)_startBackgroundTask {
-  GWS_DCHECK([NSThread isMainThread]);
-  if (_backgroundTask == UIBackgroundTaskInvalid) {
-    GWS_LOG_DEBUG(@"Did start background task");
-    _backgroundTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
-      
-      GWS_LOG_WARNING(@"Application is being suspended while %@ is still connected", [self class]);
-      [self _endBackgroundTask];
-      
-    }];
-  } else {
-    GWS_DNOT_REACHED();
-  }
+//  GWS_DCHECK([NSThread isMainThread]);
+//  if (_backgroundTask == UIBackgroundTaskInvalid) {
+//    GWS_LOG_DEBUG(@"Did start background task");
+//    _backgroundTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+//      
+//      GWS_LOG_WARNING(@"Application is being suspended while %@ is still connected", [self class]);
+//      [self _endBackgroundTask];
+//      
+//    }];
+//  } else {
+//    GWS_DNOT_REACHED();
+//  }
 }
 
 #endif
@@ -276,15 +276,15 @@ static void _ExecuteMainThreadRunLoopSources() {
 
 // Always called on main thread
 - (void)_endBackgroundTask {
-  GWS_DCHECK([NSThread isMainThread]);
-  if (_backgroundTask != UIBackgroundTaskInvalid) {
-    if (_suspendInBackground && ([[UIApplication sharedApplication] applicationState] == UIApplicationStateBackground) && _source4) {
-      [self _stop];
-    }
-    [[UIApplication sharedApplication] endBackgroundTask:_backgroundTask];
-    _backgroundTask = UIBackgroundTaskInvalid;
-    GWS_LOG_DEBUG(@"Did end background task");
-  }
+//  GWS_DCHECK([NSThread isMainThread]);
+//  if (_backgroundTask != UIBackgroundTaskInvalid) {
+//    if (_suspendInBackground && ([[UIApplication sharedApplication] applicationState] == UIApplicationStateBackground) && _source4) {
+//      [self _stop];
+//    }
+//    [[UIApplication sharedApplication] endBackgroundTask:_backgroundTask];
+//    _backgroundTask = UIBackgroundTaskInvalid;
+//    GWS_LOG_DEBUG(@"Did end background task");
+//  }
 }
 
 #endif
@@ -548,7 +548,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
     }];
   }
   _connectionClass = _GetOption(_options, GCDWebServerOption_ConnectionClass, [GCDWebServerConnection class]);
-  _mapHEADToGET = [_GetOption(_options, GCDWebServerOption_AutomaticallyMapHEADToGET, @YES) boolValue];
+  _mapHEADToGET = [_GetOption(_options, GCDWebServerOption_AutomaticallyMapHEADToGET, @NO) boolValue];
   _disconnectDelay = [_GetOption(_options, GCDWebServerOption_ConnectedStateCoalescingInterval, @1.0) doubleValue];
   
   _source4 = [self _createDispatchSourceWithListeningSocket:listeningSocket4 isIPv6:NO];
@@ -667,7 +667,8 @@ static inline NSString* _EncodeBase64(NSString* string) {
     _options = [options copy];
 #if TARGET_OS_IPHONE
     _suspendInBackground = [_GetOption(_options, GCDWebServerOption_AutomaticallySuspendInBackground, @YES) boolValue];
-    if (((_suspendInBackground == NO) || ([[UIApplication sharedApplication] applicationState] != UIApplicationStateBackground)) && ![self _start:error])
+//    if (((_suspendInBackground == NO) || ([[UIApplication sharedApplication] applicationState] != UIApplicationStateBackground)) && ![self _start:error])
+      if (![self _start:error])
 #else
     if (![self _start:error])
 #endif
