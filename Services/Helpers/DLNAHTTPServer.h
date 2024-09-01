@@ -21,8 +21,11 @@
 #import <Foundation/Foundation.h>
 #import "GCDWebServer.h"
 #import "ServiceSubscription.h"
+#import "GCDWebServerFileResponse.h"
+#import "GCDWebServerDataResponse.h"
+#import "GCDWebServerStreamedResponse.h"
 
-@interface DLNAHTTPServer : NSObject <GCDWebServerDelegate>
+@interface DLNAHTTPServer : NSObject <GCDWebServerDelegate, NSURLSessionDelegate, NSURLSessionTaskDelegate, NSURLSessionDataDelegate>
 
 - (void) start;
 - (void) stop;
@@ -34,5 +37,14 @@
 @property (nonatomic, readonly) GCDWebServer *server;
 @property (nonatomic, readonly) BOOL isRunning;
 @property (nonatomic, readonly) BOOL hasSubscriptions;
+
+@property (nonatomic) NSInteger fileNumber;
+@property (nonatomic) NSUInteger offset;
+@property (nonatomic) NSUInteger size;
+@property (nonatomic) NSUInteger fileSize;
+@property (nonatomic, strong) GCDWebServerStreamedResponse *sResponse;
+@property (nonatomic, strong) NSString *contentRange;
+@property (nonatomic) BOOL isHLS;
+@property (nonatomic) NSUInteger segmentIndex;
 
 @end
