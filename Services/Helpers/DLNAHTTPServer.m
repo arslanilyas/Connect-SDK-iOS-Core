@@ -67,7 +67,7 @@
     [_allSubscriptions removeAllObjects];
     
     _server = [[GCDWebServer alloc] init];
-    _server.delegate = self;
+//    _server.delegate = self;
     __weak typeof(self) weakSelf = self;
     GCDWebServerResponse *(^webServerResponseBlock)(GCDWebServerRequest *request) = ^GCDWebServerResponse *(GCDWebServerRequest *request) {
         [weakSelf processRequest:(GCDWebServerDataRequest *)request];
@@ -145,12 +145,12 @@
     __weak typeof(self) weakSelf = self;
     [self.server addDefaultHandlerForMethod:@"GET" requestClass:[GCDWebServerRequest self] processBlock:^GCDWebServerResponse *(GCDWebServerRequest *request) {
         weakSelf.isHLS = NO;
-        if ([NSUserDefaults.standardUserDefaults objectForKey:@"ResourceId"] == nil && [request.path containsString:@"ts"]) {
+        if ([NSUserDefaults.standardUserDefaults objectForKey:@"ResourceId"] == nil && [request.path containsString:@"mp4"]) {
             weakSelf.isHLS = YES;
             NSURL *originURL = [NSURL URLWithString:[[NSUserDefaults standardUserDefaults] objectForKey:@"stream"]];
             GCDWebServerResponse *response = [weakSelf sendRequest:request toExternalM3U8Url:originURL.absoluteString];
             return response;
-        } else if ([NSUserDefaults.standardUserDefaults objectForKey:@"ResourceId"] == nil && [request.path containsString:@"mp4"]) {
+        } else if ([NSUserDefaults.standardUserDefaults objectForKey:@"ResourceId"] == nil && [request.path containsString:@"ts"]) {
             NSString *remoteUrl = [NSUserDefaults.standardUserDefaults objectForKey:@"stream"];
             GCDWebServerResponse *response = [weakSelf sendRequest:request toExternalUrl:remoteUrl];
             return response;

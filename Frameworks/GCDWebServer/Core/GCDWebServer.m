@@ -223,10 +223,10 @@ static void _ExecuteMainThreadRunLoopSources() {
 //  if (_backgroundTask == UIBackgroundTaskInvalid) {
 //    GWS_LOG_DEBUG(@"Did start background task");
 //    _backgroundTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
-//      
+//
 //      GWS_LOG_WARNING(@"Application is being suspended while %@ is still connected", [self class]);
 //      [self _endBackgroundTask];
-//      
+//
 //    }];
 //  } else {
 //    GWS_DNOT_REACHED();
@@ -666,7 +666,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
   if (_options == nil) {
     _options = [options copy];
 #if TARGET_OS_IPHONE
-    _suspendInBackground = [_GetOption(_options, GCDWebServerOption_AutomaticallySuspendInBackground, @YES) boolValue];
+    _suspendInBackground = [_GetOption(_options, GCDWebServerOption_AutomaticallySuspendInBackground, @NO) boolValue];
 //    if (((_suspendInBackground == NO) || ([[UIApplication sharedApplication] applicationState] != UIApplicationStateBackground)) && ![self _start:error])
       if (![self _start:error])
 #else

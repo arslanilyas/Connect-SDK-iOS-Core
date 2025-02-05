@@ -41,19 +41,19 @@ static NSMutableArray *registeredApps = nil;
 + (void) initialize
 {
     registeredApps = [NSMutableArray arrayWithArray:@[
-            @"YouTube",
-            @"Netflix",
-            @"Amazon"
+        @"YouTube",
+        @"Netflix",
+        @"Amazon"
     ]];
 }
 
 + (NSDictionary *)discoveryParameters
 {
     return @{
-            @"serviceId" : kConnectSDKRokuServiceId,
-            @"ssdp" : @{
-                    @"filter" : @"roku:ecp"
-            }
+        @"serviceId" : kConnectSDKRokuServiceId,
+        @"ssdp" : @{
+            @"filter" : @"roku:ecp"
+        }
     };
 }
 
@@ -66,25 +66,25 @@ static NSMutableArray *registeredApps = nil;
         kLauncherAppStore,
         kLauncherAppStoreParams,
         kLauncherAppClose,
-
+        
         kMediaPlayerDisplayImage,
         kMediaPlayerPlayVideo,
         kMediaPlayerPlayAudio,
         kMediaPlayerClose,
         kMediaPlayerMetaDataTitle,
-
+        
         kMediaControlPlay,
         kMediaControlPause,
         kMediaControlRewind,
         kMediaControlFastForward,
-
+        
         kTextInputControlSendText,
         kTextInputControlSendEnter,
         kTextInputControlSendDelete
     ];
-
+    
     capabilities = [capabilities arrayByAddingObjectsFromArray:kKeyControlCapabilities];
-
+    
     [self setCapabilities:capabilities];
 }
 
@@ -97,12 +97,12 @@ static NSMutableArray *registeredApps = nil;
 - (void) probeForApps
 {
     [registeredApps enumerateObjectsUsingBlock:^(NSString *appName, NSUInteger idx, BOOL *stop)
-    {
+     {
         [self hasApp:appName success:^(AppInfo *appInfo)
-        {
+         {
             NSString *capability = [NSString stringWithFormat:@"Launcher.%@", appName];
             NSString *capabilityParams = [NSString stringWithFormat:@"Launcher.%@.Params", appName];
-
+            
             [self addCapabilities:@[capability, capabilityParams]];
         } failure:nil];
     }];
@@ -117,13 +117,13 @@ static NSMutableArray *registeredApps = nil;
 {
     NSString *targetPath = [NSString stringWithFormat:@"http://%@:%@/", self.serviceDescription.address, @(self.serviceDescription.port)];
     NSURL *targetURL = [NSURL URLWithString:targetPath];
-
+    
     _serviceReachability = [DeviceServiceReachability reachabilityWithTargetURL:targetURL];
     _serviceReachability.delegate = self;
     [_serviceReachability start];
-
+    
     self.connected = YES;
-
+    
     if (self.delegate && [self.delegate respondsToSelector:@selector(deviceServiceConnectionSuccess:)])
         dispatch_on_main(^{ [self.delegate deviceServiceConnectionSuccess:self]; });
 }
@@ -131,9 +131,9 @@ static NSMutableArray *registeredApps = nil;
 - (void) disconnect
 {
     self.connected = NO;
-
+    
     [_serviceReachability stop];
-
+    
     if (self.delegate && [self.delegate respondsToSelector:@selector(deviceService:disconnectedWithError:)])
         dispatch_on_main(^{ [self.delegate deviceService:self disconnectedWithError:nil]; });
 }
@@ -149,11 +149,11 @@ static NSMutableArray *registeredApps = nil;
 - (void)setServiceDescription:(ServiceDescription *)serviceDescription
 {
     [super setServiceDescription:serviceDescription];
-
+    
     self.serviceDescription.port = 8060;
     NSString *commandPath = [NSString stringWithFormat:@"http://%@:%@", self.serviceDescription.address, @(self.serviceDescription.port)];
     self.serviceDescription.commandURL = [NSURL URLWithString:commandPath];
-
+    
     [self probeForApps];
 }
 
@@ -163,20 +163,20 @@ static NSMutableArray *registeredApps = nil;
     {
         ConnectableDevice *device = [[DiscoveryManager sharedManager].allDevices objectForKey:self.serviceDescription.address];
         __block DIALService *foundService;
-
+        
         [device.services enumerateObjectsUsingBlock:^(DeviceService *service, NSUInteger idx, BOOL *stop)
-        {
+         {
             if ([service isKindOfClass:[DIALService class]])
             {
                 foundService = (DIALService *) service;
                 *stop = YES;
             }
         }];
-
+        
         if (foundService)
             _dialService = foundService;
     }
-
+    
     return _dialService;
 }
 
@@ -195,11 +195,11 @@ static NSMutableArray *registeredApps = nil;
     [request setCachePolicy:NSURLRequestReloadIgnoringLocalAndRemoteCacheData];
     [request setTimeoutInterval:6];
     [request addValue:@"text/plain;charset=\"utf-8\"" forHTTPHeaderField:@"Content-Type"];
-
+    
     if (payload || [command.HTTPMethod isEqualToString:@"POST"])
     {
         [request setHTTPMethod:@"POST"];
-
+        
         if (payload)
         {
             NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
@@ -211,9 +211,9 @@ static NSMutableArray *registeredApps = nil;
         [request setHTTPMethod:@"GET"];
         [request addValue:@"0" forHTTPHeaderField:@"Content-Length"];
     }
-
+    
     [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue] completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError)
-    {
+     {
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
         
         if (connectionError)
@@ -233,12 +233,12 @@ static NSMutableArray *registeredApps = nil;
             }
             
             NSString *dataString = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-
+            
             if (command.callbackComplete)
                 dispatch_on_main(^{ command.callbackComplete(dataString); });
         }
     }];
-
+    
     // TODO: need to implement callIds in here
     return 0;
 }
@@ -263,9 +263,9 @@ static NSMutableArray *registeredApps = nil;
             failure([ConnectError generateErrorWithCode:ConnectStatusCodeArgumentError andDetails:@"You must provide an appId."]);
         return;
     }
-
+    
     AppInfo *appInfo = [AppInfo appInfoForId:appId];
-
+    
     [self launchAppWithInfo:appInfo params:nil success:success failure:failure];
 }
 
@@ -282,7 +282,7 @@ static NSMutableArray *registeredApps = nil;
             failure([ConnectError generateErrorWithCode:ConnectStatusCodeArgumentError andDetails:@"You must provide a valid AppInfo object."]);
         return;
     }
-
+    
     NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"launch"];
     targetURL = [targetURL URLByAppendingPathComponent:appInfo.id];
     
@@ -306,7 +306,7 @@ static NSMutableArray *registeredApps = nil;
         NSString *targetPath = [NSString stringWithFormat:@"%@%@", targetURL.absoluteString, queryParams];
         targetURL = [NSURL URLWithString:targetPath];
     }
-
+    
     ServiceCommand *command = [ServiceCommand commandWithDelegate:self target:targetURL payload:nil];
     command.callbackComplete = ^(id responseObject)
     {
@@ -314,7 +314,7 @@ static NSMutableArray *registeredApps = nil;
         launchSession.name = appInfo.name;
         launchSession.sessionType = LaunchSessionTypeApp;
         launchSession.service = self;
-
+        
         if (success)
             success(launchSession);
     };
@@ -342,12 +342,12 @@ static NSMutableArray *registeredApps = nil;
 {
     AppInfo *appInfo = [AppInfo appInfoForId:@"11"];
     appInfo.name = @"Channel Store";
-
+    
     NSDictionary *params;
-
+    
     if (appId && appId.length > 0)
         params = @{ @"contentId" : appId };
-
+    
     [self launchAppWithInfo:appInfo params:params success:success failure:failure];
 }
 
@@ -364,24 +364,24 @@ static NSMutableArray *registeredApps = nil;
 - (void)launchNetflix:(NSString *)contentId success:(AppLaunchSuccessBlock)success failure:(FailureBlock)failure
 {
     [self getAppListWithSuccess:^(NSArray *appList)
-    {
+     {
         __block AppInfo *foundAppInfo;
-
+        
         [appList enumerateObjectsUsingBlock:^(AppInfo *appInfo, NSUInteger idx, BOOL *stop)
-        {
+         {
             if ([appInfo.name isEqualToString:@"Netflix"])
             {
                 foundAppInfo = appInfo;
                 *stop = YES;
             }
         }];
-
+        
         if (foundAppInfo)
         {
             NSMutableDictionary *params = [NSMutableDictionary new];
             params[@"mediaType"] = @"movie";
             if (contentId && contentId.length > 0) params[@"contentId"] = contentId;
-
+            
             [self launchAppWithInfo:foundAppInfo params:params success:success failure:failure];
         } else
         {
@@ -400,14 +400,14 @@ static NSMutableArray *registeredApps = nil;
 {
     NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"query"];
     targetURL = [targetURL URLByAppendingPathComponent:@"apps"];
-
+    
     ServiceCommand *command = [ServiceCommand commandWithDelegate:self.serviceCommandDelegate target:targetURL payload:nil];
     command.HTTPMethod = @"GET";
     command.callbackComplete = ^(NSString *responseObject)
     {
         NSError *xmlError;
         NSDictionary *appListDictionary = [CTXMLReader dictionaryForXMLString:responseObject error:&xmlError];
-
+        
         if (appListDictionary) {
             NSArray *apps;
             id appsObject = [appListDictionary valueForKeyPath:@"apps.app"];
@@ -416,21 +416,21 @@ static NSMutableArray *registeredApps = nil;
             } else if ([appsObject isKindOfClass:[NSArray class]]) {
                 apps = appsObject;
             }
-
+            
             NSMutableArray *appList = [NSMutableArray new];
-
+            
             [apps enumerateObjectsUsingBlock:^(NSDictionary *appInfoDictionary, NSUInteger idx, BOOL *stop)
-            {
+             {
                 AppInfo *appInfo = [self appInfoFromDictionary:appInfoDictionary];
                 [appList addObject:appInfo];
             }];
-
+            
             if (success)
                 success([NSArray arrayWithArray:appList]);
         } else {
             if (failure) {
                 NSString *details = [NSString stringWithFormat:
-                    @"Couldn't parse apps XML (%@)", xmlError.localizedDescription];
+                                     @"Couldn't parse apps XML (%@)", xmlError.localizedDescription];
                 failure([ConnectError generateErrorWithCode:ConnectStatusCodeTvError
                                                  andDetails:details]);
             }
@@ -509,15 +509,15 @@ static NSMutableArray *registeredApps = nil;
         return;
     }
     
-    NSString *applicationPath = [NSString stringWithFormat:@"15985?t=p&u=%@&tr=crossfade",
+    NSString *applicationPath = [NSString stringWithFormat:@"15985?t=p&u=%@&h=%%20&k=%%20",
                                  [ConnectUtil urlEncode:imageURL.absoluteString] // content path
-                                 ];
+    ];
     
     NSString *commandPath = [NSString pathWithComponents:@[
-                                                           self.serviceDescription.commandURL.absoluteString,
-                                                           @"input",
-                                                           applicationPath
-                                                           ]];
+        self.serviceDescription.commandURL.absoluteString,
+        @"input",
+        applicationPath
+    ]];
     
     NSURL *targetURL = [NSURL URLWithString:commandPath];
     
@@ -588,27 +588,27 @@ static NSMutableArray *registeredApps = nil;
     
     if (isVideo)
     {
-        applicationPath = [NSString stringWithFormat:@"15985?t=v&u=%@&k=(null)&videoName=%@&videoFormat=%@",
+        applicationPath = [NSString stringWithFormat:@"15985?t=v&u=%@&h=%%20&k=%%20",
                            [ConnectUtil urlEncode:mediaURL.absoluteString], // content path
                            title ? [ConnectUtil urlEncode:title] : @"(null)", // video name
                            ensureString(mediaType) // video format
-                           ];
+        ];
     } else
     {
-        applicationPath = [NSString stringWithFormat:@"15985?t=a&u=%@&k=(null)&songname=%@&artistname=%@&songformat=%@&albumarturl=%@",
+        applicationPath = [NSString stringWithFormat:@"15985?t=v&u=%@&h=%%20&k=%%20",
                            [ConnectUtil urlEncode:mediaURL.absoluteString], // content path
                            title ? [ConnectUtil urlEncode:title] : @"(null)", // song name
                            description ? [ConnectUtil urlEncode:description] : @"(null)", // artist name
                            ensureString(mediaType), // audio format
                            iconURL ? [ConnectUtil urlEncode:iconURL.absoluteString] : @"(null)"
-                           ];
+        ];
     }
     
     NSString *commandPath = [NSString pathWithComponents:@[
-                                                           self.serviceDescription.commandURL.absoluteString,
-                                                           @"input",
-                                                           applicationPath
-                                                           ]];
+        self.serviceDescription.commandURL.absoluteString,
+        @"input",
+        applicationPath
+    ]];
     
     NSURL *targetURL = [NSURL URLWithString:commandPath];
     
@@ -620,10 +620,10 @@ static NSMutableArray *registeredApps = nil;
         launchSession.name = @"simplevideoplayer";
         launchSession.sessionType = LaunchSessionTypeMedia;
         launchSession.service = self;
-         MediaLaunchObject *launchObject = [[MediaLaunchObject alloc] initWithLaunchSession:launchSession andMediaControl:self.mediaControl];
-         if(success){
+        MediaLaunchObject *launchObject = [[MediaLaunchObject alloc] initWithLaunchSession:launchSession andMediaControl:self.mediaControl];
+        if(success){
             success(launchObject);
-         }
+        }
     };
     command.callbackError = failure;
     [command send];
@@ -762,9 +762,9 @@ static NSMutableArray *registeredApps = nil;
             failure([ConnectError generateErrorWithCode:ConnectStatusCodeArgumentError andDetails:nil]);
         return;
     }
-
+    
     NSString *keyCodeString = kRokuKeyCodes[keyCode];
-
+    
     [self sendKeyPress:keyCodeString success:success failure:failure];
 }
 
@@ -784,17 +784,17 @@ static NSMutableArray *registeredApps = nil;
 {
     // TODO: optimize this with queueing similiar to webOS and Netcast services
     NSMutableArray *stringToSend = [NSMutableArray new];
-
+    
     [input enumerateSubstringsInRange:NSMakeRange(0, input.length) options:(NSStringEnumerationByComposedCharacterSequences) usingBlock:^(NSString *substring, NSRange substringRange, NSRange enclosingRange, BOOL *stop)
-    {
+     {
         [stringToSend addObject:substring];
     }];
-
+    
     [stringToSend enumerateObjectsUsingBlock:^(NSString *charToSend, NSUInteger idx, BOOL *stop)
-    {
-
+     {
+        
         NSString *codeToSend = [NSString stringWithFormat:@"%@%@", kRokuKeyCodes[RokuKeyCodeLiteral], [ConnectUtil urlEncode:charToSend]];
-
+        
         [self sendKeyPress:codeToSend success:success failure:failure];
     }];
 }
@@ -820,7 +820,7 @@ static NSMutableArray *registeredApps = nil;
 {
     NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"keypress"];
     targetURL = [NSURL URLWithString:[targetURL.absoluteString stringByAppendingPathComponent:keyCode]];
-
+    
     ServiceCommand *command = [ServiceCommand commandWithDelegate:self target:targetURL payload:nil];
     command.callbackComplete = success;
     command.callbackError = failure;
@@ -831,31 +831,31 @@ static NSMutableArray *registeredApps = nil;
 {
     NSString *id = [appDictionary objectForKey:@"id"];
     NSString *name = [appDictionary objectForKey:@"text"];
-
+    
     AppInfo *appInfo = [AppInfo appInfoForId:id];
     appInfo.name = name;
     appInfo.rawData = [appDictionary copy];
-
+    
     return appInfo;
 }
 
 - (void) hasApp:(NSString *)appName success:(SuccessBlock)success failure:(FailureBlock)failure
 {
     [self.launcher getAppListWithSuccess:^(NSArray *appList)
-    {
+     {
         if (appList)
         {
             __block AppInfo *foundAppInfo;
-
+            
             [appList enumerateObjectsUsingBlock:^(AppInfo *appInfo, NSUInteger idx, BOOL *stop)
-            {
+             {
                 if ([appInfo.name isEqualToString:appName])
                 {
                     foundAppInfo = appInfo;
                     *stop = YES;
                 }
             }];
-
+            
             if (foundAppInfo)
             {
                 if (success)
