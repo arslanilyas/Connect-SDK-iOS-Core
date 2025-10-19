@@ -25,6 +25,7 @@
 #import "MediaPlayer.h"
 #import "KeyControl.h"
 #import "TextInputControl.h"
+#import "VolumeControl.h"
 
 enum
 {
@@ -52,7 +53,7 @@ typedef NSUInteger RokuKeyCode;
 #define kRokuKeyCodes @[ @"Home", @"Rev", @"Fwd", @"Play", @"Select", @"Left", @"Right", @"Down", @"Up", @"Back", @"InstantReplay", @"Info", @"Backspace", @"Search", @"Enter", @"Lit_" ]
 // @endcond
 
-@interface RokuService : DeviceService <Launcher, MediaPlayer, MediaControl, KeyControl, TextInputControl>
+@interface RokuService : DeviceService <Launcher, MediaPlayer, MediaControl, KeyControl, TextInputControl, VolumeControl>
 
 // @cond INTERNAL
 - (void)sendKeyCode:(RokuKeyCode)keyCode success:(SuccessBlock)success failure:(FailureBlock)failure;

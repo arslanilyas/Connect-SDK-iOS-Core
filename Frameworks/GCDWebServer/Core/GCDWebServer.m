@@ -85,7 +85,6 @@ static BOOL _run;
 #endif
 
 #ifdef __GCDWEBSERVER_LOGGING_FACILITY_BUILTIN__
-
 void GCDWebServerLogMessage(GCDWebServerLoggingLevel level, NSString* format, ...) {
   static const char* levelNames[] = {"DEBUG", "VERBOSE", "INFO", "WARNING", "ERROR", "EXCEPTION"};
   static int enableLogging = -1;
@@ -223,10 +222,10 @@ static void _ExecuteMainThreadRunLoopSources() {
 //  if (_backgroundTask == UIBackgroundTaskInvalid) {
 //    GWS_LOG_DEBUG(@"Did start background task");
 //    _backgroundTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
-//
+//      
 //      GWS_LOG_WARNING(@"Application is being suspended while %@ is still connected", [self class]);
 //      [self _endBackgroundTask];
-//
+//      
 //    }];
 //  } else {
 //    GWS_DNOT_REACHED();

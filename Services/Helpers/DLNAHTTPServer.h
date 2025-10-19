@@ -34,6 +34,9 @@
 
 - (NSString *) getHostPath;
 
+// DLNAHTTPServer.h
++ (instancetype)sharedInstance;
+
 @property (nonatomic, readonly) GCDWebServer *server;
 @property (nonatomic, readonly) BOOL isRunning;
 @property (nonatomic, readonly) BOOL hasSubscriptions;

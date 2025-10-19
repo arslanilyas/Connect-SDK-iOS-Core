@@ -24,13 +24,15 @@
 #import "ConnectUtil.h"
 #import "DeviceServiceReachability.h"
 #import "DiscoveryManager.h"
-
+#import "DLNAHTTPServer.h"
 #import "NSObject+FeatureNotSupported_Private.h"
 
 @interface RokuService () <ServiceCommandDelegate, DeviceServiceReachabilityDelegate>
 {
     DIALService *_dialService;
     DeviceServiceReachability *_serviceReachability;
+    DLNAHTTPServer *_httpServer; // Use DLNAHTTPServer or a similar server
+    NSMutableDictionary *_httpServerSessionIds; // Manage subscriptions
 }
 @end
 
@@ -124,8 +126,20 @@ static NSMutableArray *registeredApps = nil;
     
     self.connected = YES;
     
+    if (!_httpServer) {
+        _httpServer = [self createHTTPServer]; // Create and configure the HTTP server
+    }
+
+    [_httpServer start]; // Start the HTTP server
+    
     if (self.delegate && [self.delegate respondsToSelector:@selector(deviceServiceConnectionSuccess:)])
         dispatch_on_main(^{ [self.delegate deviceServiceConnectionSuccess:self]; });
+}
+
+- (DLNAHTTPServer *)createHTTPServer {
+    DLNAHTTPServer *server = [DLNAHTTPServer new];
+    // Configure server if needed
+    return server;
 }
 
 - (void) disconnect
@@ -133,6 +147,10 @@ static NSMutableArray *registeredApps = nil;
     self.connected = NO;
     
     [_serviceReachability stop];
+    
+    if (_httpServer) {
+        [_httpServer stop]; // Stop the HTTP server
+    }
     
     if (self.delegate && [self.delegate respondsToSelector:@selector(deviceService:disconnectedWithError:)])
         dispatch_on_main(^{ [self.delegate deviceService:self disconnectedWithError:nil]; });
@@ -198,7 +216,7 @@ static NSMutableArray *registeredApps = nil;
     
     if (payload || [command.HTTPMethod isEqualToString:@"POST"])
     {
-        [request setHTTPMethod:@"POST"];
+        [request setHTTPMethod:@"POST"];    
         
         if (payload)
         {
@@ -672,15 +690,79 @@ static NSMutableArray *registeredApps = nil;
     [self sendKeyCode:RokuKeyCodeFastForward success:success failure:failure];
 }
 
-- (void)seek:(NSTimeInterval)position success:(SuccessBlock)success failure:(FailureBlock)failure
-{
-    [self sendNotSupportedFailure:failure];
-}
 
 - (void)getPlayStateWithSuccess:(MediaPlayStateSuccessBlock)success failure:(FailureBlock)failure
 {
-    [self sendNotSupportedFailure:failure];
+    NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"query/media-player"];
+
+    ServiceCommand *command = [ServiceCommand commandWithDelegate:self.serviceCommandDelegate target:targetURL payload:nil];
+    command.HTTPMethod = @"GET";
+
+    command.callbackComplete = ^(NSString *responseObject)
+    {
+        NSLog(@"Roku media-player response: %@", responseObject);
+
+        if (!responseObject || responseObject.length == 0) {
+            if (failure) {
+                failure([ConnectError generateErrorWithCode:ConnectStatusCodeTvError
+                                                 andDetails:@"Empty response from Roku media-player"]);
+            }
+            return;
+        }
+
+        NSError *xmlError;
+        NSDictionary *mediaPlayerData = [CTXMLReader dictionaryForXMLString:responseObject error:&xmlError];
+
+        if (!mediaPlayerData || xmlError) {
+            NSLog(@"XML Parsing Error: %@", xmlError.localizedDescription);
+            if (failure) {
+                failure([ConnectError generateErrorWithCode:ConnectStatusCodeTvError
+                                                 andDetails:@"Failed to parse Roku media-player response"]);
+            }
+            return;
+        }
+
+        // Extract play state value using the correct key path
+        NSString *stateString = [mediaPlayerData valueForKeyPath:@"player.state"];
+        if (!stateString) {
+            if (failure) {
+                failure([ConnectError generateErrorWithCode:ConnectStatusCodeTvError
+                                                 andDetails:@"Play state value not found in Roku response"]);
+            }
+            return;
+        }
+
+        // Convert Roku's state to ConnectSDK Media Control States
+        MediaControlPlayState playState;
+
+        if ([stateString isEqualToString:@"play"]) {
+            playState = MediaControlPlayStatePlaying;
+        } else if ([stateString isEqualToString:@"pause"]) {
+            playState = MediaControlPlayStatePaused;
+        } else if ([stateString isEqualToString:@"buffering"]) {
+            playState = MediaControlPlayStateBuffering;
+        } else if ([stateString isEqualToString:@"stopped"]) {
+            playState = MediaControlPlayStateFinished;
+        } else {
+            playState = MediaControlPlayStateUnknown;
+        }
+
+        if (success) {
+            success(playState);
+        }
+    };
+
+    command.callbackError = ^(NSError *error) {
+        NSLog(@"Roku API Error: %@", error.localizedDescription);
+        if (failure) {
+            failure([ConnectError generateErrorWithCode:ConnectStatusCodeError
+                                             andDetails:[NSString stringWithFormat:@"API error: %@", error.localizedDescription]]);
+        }
+    };
+
+    [command send];
 }
+
 
 - (ServiceSubscription *)subscribePlayStateWithSuccess:(MediaPlayStateSuccessBlock)success failure:(FailureBlock)failure
 {
@@ -694,8 +776,38 @@ static NSMutableArray *registeredApps = nil;
 
 - (void)getPositionWithSuccess:(MediaPositionSuccessBlock)success failure:(FailureBlock)failure
 {
-    [self sendNotSupportedFailure:failure];
+    // Construct URL to query Roku's media player status
+    NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"query/media-player"];
+
+    // Create a service command to fetch media status
+    ServiceCommand *command = [ServiceCommand commandWithDelegate:self.serviceCommandDelegate target:targetURL payload:nil];
+    command.HTTPMethod = @"GET";
+    
+    command.callbackComplete = ^(NSString *responseObject)
+    {
+        NSError *xmlError;
+        NSDictionary *mediaPlayerData = [CTXMLReader dictionaryForXMLString:responseObject error:&xmlError];
+
+        if (mediaPlayerData) {
+            // Extract the position value from XML response
+            NSString *positionString = [mediaPlayerData valueForKeyPath:@"player.position.text"];
+            NSTimeInterval position = [positionString doubleValue] / 1000.0; // Convert from milliseconds to seconds
+            
+            if (success) {
+                success(position);
+            }
+        } else {
+            if (failure) {
+                failure([ConnectError generateErrorWithCode:ConnectStatusCodeTvError
+                                                 andDetails:@"Failed to parse Roku media-player response"]);
+            }
+        }
+    };
+    
+    command.callbackError = failure;
+    [command send];
 }
+
 
 - (void)getMediaMetaDataWithSuccess:(SuccessBlock)success
                             failure:(FailureBlock)failure {
@@ -706,6 +818,10 @@ static NSMutableArray *registeredApps = nil;
 {
     return [self sendNotSupportedFailure:failure];
 }
+
+- (void)seek:(NSTimeInterval)position success:(SuccessBlock)success failure:(FailureBlock)failure { 
+}
+
 
 #pragma mark - Key Control
 
@@ -871,6 +987,70 @@ static NSMutableArray *registeredApps = nil;
                 failure([ConnectError generateErrorWithCode:ConnectStatusCodeTvError andDetails:@"Could not find any apps on the TV."]);
         }
     } failure:failure];
+}
+
+- (void)volumeUpWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure
+{
+    [self sendKeyPress:@"VolumeUp" success:success failure:failure];
+}
+
+- (void)volumeDownWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure
+{
+    [self sendKeyPress:@"VolumeDown" success:success failure:failure];
+}
+
+- (void)getMuteWithSuccess:(MuteSuccessBlock)success failure:(FailureBlock)failure { 
+    [self sendNotSupportedFailure:failure];
+}
+
+
+- (void)getVolumeWithSuccess:(VolumeSuccessBlock)success failure:(FailureBlock)failure { 
+    [self sendNotSupportedFailure:failure];
+}
+
+
+- (void)setMute:(BOOL)mute success:(SuccessBlock)success failure:(FailureBlock)failure { 
+    [self sendNotSupportedFailure:failure];
+}
+
+
+- (void)setVolume:(float)volume success:(SuccessBlock)success failure:(FailureBlock)failure { 
+    [self sendNotSupportedFailure:failure];
+}
+
+
+- (ServiceSubscription *)subscribeMuteWithSuccess:(MuteSuccessBlock)success failure:(FailureBlock)failure { 
+    return nil;
+}
+
+
+- (ServiceSubscription *)subscribeVolumeWithSuccess:(VolumeSuccessBlock)success failure:(FailureBlock)failure { 
+    return nil;
+}
+
+
+- (id<VolumeControl>)volumeControl { 
+    return self;
+}
+
+
+- (CapabilityPriorityLevel)volumeControlPriority { 
+    return CapabilityPriorityLevelNormal;
+}
+
+
+- (void)toggleMuteWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure
+{
+    [self sendKeyPress:@"VolumeMute" success:success failure:failure];
+}
+
+
+- (id)initWithJSONObject:(NSDictionary *)dict { 
+    return nil;
+}
+
+- (NSDictionary *)toJSONObject { 
+    return nil;
 }
 
 @end

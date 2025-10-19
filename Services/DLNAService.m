@@ -1332,10 +1332,21 @@ static const NSInteger kValueNotFound = -1;
                                                   andType:subtitleType
                                                  toWriter:writer];
                 }
-
-                NSString *value = [NSString stringWithFormat:
-                    @"http-get:*:%@:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",
-                    [mimeType orEmpty]];
+                
+                NSString *value;
+                NSString *lowerMime = mimeType.lowercaseString;
+                
+                // MP3 only: keep explicit MP3 profile
+                if ([lowerMime isEqualToString:@"audio/mpeg"] || [lowerMime isEqualToString:@"audio/mp3"]) {
+                    value = [NSString stringWithFormat:
+                             @"http-get:*:%@:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",
+                             [mimeType orEmpty]];
+                } else {
+                    value = [NSString stringWithFormat:
+                             @"http-get:*:%@:DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",
+                             [mimeType orEmpty]];
+                }
+                
                 [writer writeAttribute:@"protocolInfo" value:value];
                 [writer writeCharacters:mediaInfoURLString];
             }];
