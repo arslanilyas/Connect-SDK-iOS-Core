@@ -37,6 +37,7 @@
 @end
 
 static NSMutableArray *registeredApps = nil;
+static NSString * const kCastStreamReceiverDevAppId = @"837661";
 
 @implementation RokuService
 
@@ -516,45 +517,30 @@ static NSMutableArray *registeredApps = nil;
     [self displayImage:mediaInfo.url iconURL:iconURL title:mediaInfo.title description:mediaInfo.description mimeType:mediaInfo.mimeType success:success failure:failure];
 }
 
-- (void) displayImageWithMediaInfo:(MediaInfo *)mediaInfo success:(MediaPlayerSuccessBlock)success failure:(FailureBlock)failure
+- (void) displayImageWithMediaInfo:(MediaInfo *)mediaInfo
+                           success:(MediaPlayerSuccessBlock)success
+                           failure:(FailureBlock)failure
 {
     NSURL *imageURL = mediaInfo.url;
     if (!imageURL)
     {
-        if (failure)
-            failure([ConnectError generateErrorWithCode:ConnectStatusCodeArgumentError andDetails:@"You need to provide a video URL"]);
-        
+        if (failure) {
+            failure([ConnectError generateErrorWithCode:ConnectStatusCodeArgumentError
+                                             andDetails:@"You need to provide an image URL"]);
+        }
         return;
     }
-    
-    NSString *applicationPath = [NSString stringWithFormat:@"15985?t=p&u=%@&h=%%20&k=%%20",
-                                 [ConnectUtil urlEncode:imageURL.absoluteString] // content path
-    ];
-    
-    NSString *commandPath = [NSString pathWithComponents:@[
-        self.serviceDescription.commandURL.absoluteString,
-        @"input",
-        applicationPath
-    ]];
-    
-    NSURL *targetURL = [NSURL URLWithString:commandPath];
-    
-    ServiceCommand *command = [ServiceCommand commandWithDelegate:self.serviceCommandDelegate target:targetURL payload:nil];
-    command.HTTPMethod = @"POST";
-    command.callbackComplete = ^(id responseObject)
-    {
-        LaunchSession *launchSession = [LaunchSession launchSessionForAppId:@"15985"];
-        launchSession.name = @"simplevideoplayer";
-        launchSession.sessionType = LaunchSessionTypeMedia;
-        launchSession.service = self;
-        
-        MediaLaunchObject *launchObject = [[MediaLaunchObject alloc] initWithLaunchSession:launchSession andMediaControl:self.mediaControl];
-        if(success){
-            success(launchObject);
-        }
-    };
-    command.callbackError = failure;
-    [command send];
+
+    // Encode URL for use as contentId
+    NSString *encodedContentId = [ConnectUtil urlEncode:imageURL.absoluteString];
+
+    // We still declare mediaType=image so your BrightScript can read it if needed
+    NSString *query = [NSString stringWithFormat:@"?contentId=%@&mediaType=image", encodedContentId];
+
+    // ✅ New: route through helper that chooses /launch or /input
+    [self sendCastStreamRequestWithQuery:query
+                                 success:success
+                                 failure:failure];
 }
 
 - (void) playMedia:(NSURL *)mediaURL iconURL:(NSURL *)iconURL title:(NSString *)title description:(NSString *)description mimeType:(NSString *)mimeType shouldLoop:(BOOL)shouldLoop success:(MediaPlayerDisplaySuccessBlock)success failure:(FailureBlock)failure
@@ -580,72 +566,134 @@ static NSMutableArray *registeredApps = nil;
     [self playMedia:mediaInfo.url iconURL:iconURL title:mediaInfo.title description:mediaInfo.description mimeType:mediaInfo.mimeType shouldLoop:shouldLoop success:success failure:failure];
 }
 
-- (void) playMediaWithMediaInfo:(MediaInfo *)mediaInfo shouldLoop:(BOOL)shouldLoop success:(MediaPlayerSuccessBlock)success failure:(FailureBlock)failure
+#pragma mark - CastStream Receiver routing
+
+// Internal helper: actually send to /<pathComponent>/dev?...
+- (void)sendCastStreamToPath:(NSString *)pathComponent
+                       query:(NSString *)query
+                     success:(MediaPlayerSuccessBlock)success
+                     failure:(FailureBlock)failure
 {
-    NSURL *iconURL;
-    if(mediaInfo.images){
-        ImageInfo *imageInfo = [mediaInfo.images firstObject];
-        iconURL = imageInfo.url;
-    }
-    NSURL *mediaURL = mediaInfo.url;
-    NSString *mimeType = mediaInfo.mimeType;
-    NSString *title = mediaInfo.title;
-    NSString *description = mediaInfo.description;
-    if (!mediaURL)
-    {
-        if (failure)
-            failure([ConnectError generateErrorWithCode:ConnectStatusCodeArgumentError andDetails:@"You need to provide a media URL"]);
-        
-        return;
-    }
-    
-    NSString *mediaType = [[mimeType componentsSeparatedByString:@"/"] lastObject];
-    BOOL isVideo = [[mimeType substringToIndex:1] isEqualToString:@"v"];
-    
-    NSString *applicationPath;
-    
-    if (isVideo)
-    {
-        applicationPath = [NSString stringWithFormat:@"15985?t=v&u=%@&h=%%20&k=%%20",
-                           [ConnectUtil urlEncode:mediaURL.absoluteString], // content path
-                           title ? [ConnectUtil urlEncode:title] : @"(null)", // video name
-                           ensureString(mediaType) // video format
-        ];
-    } else
-    {
-        applicationPath = [NSString stringWithFormat:@"15985?t=v&u=%@&h=%%20&k=%%20",
-                           [ConnectUtil urlEncode:mediaURL.absoluteString], // content path
-                           title ? [ConnectUtil urlEncode:title] : @"(null)", // song name
-                           description ? [ConnectUtil urlEncode:description] : @"(null)", // artist name
-                           ensureString(mediaType), // audio format
-                           iconURL ? [ConnectUtil urlEncode:iconURL.absoluteString] : @"(null)"
-        ];
-    }
-    
-    NSString *commandPath = [NSString pathWithComponents:@[
-        self.serviceDescription.commandURL.absoluteString,
-        @"input",
-        applicationPath
-    ]];
-    
-    NSURL *targetURL = [NSURL URLWithString:commandPath];
-    
-    ServiceCommand *command = [ServiceCommand commandWithDelegate:self.serviceCommandDelegate target:targetURL payload:nil];
-    command.HTTPMethod = @"POST";
+    NSURL *baseURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:pathComponent];
+    baseURL = [baseURL URLByAppendingPathComponent:kCastStreamReceiverDevAppId];
+
+    NSString *fullURLString = [baseURL.absoluteString stringByAppendingString:(query ?: @"")];
+    NSURL *targetURL = [NSURL URLWithString:fullURLString];
+
+    NSLog(@"[CastStream][Roku] sending to path '%@': %@", pathComponent, fullURLString);
+
+    ServiceCommand *command =
+        [ServiceCommand commandWithDelegate:self.serviceCommandDelegate
+                                     target:targetURL
+                                    payload:nil];
+    command.HTTPMethod = @"POST";   // same as: curl -d '' ...
+
     command.callbackComplete = ^(id responseObject)
     {
-        LaunchSession *launchSession = [LaunchSession launchSessionForAppId:@"15985"];
-        launchSession.name = @"simplevideoplayer";
+        LaunchSession *launchSession = [LaunchSession launchSessionForAppId:kCastStreamReceiverDevAppId];
+        launchSession.name = @"CastStream Receiver";
         launchSession.sessionType = LaunchSessionTypeMedia;
         launchSession.service = self;
-        MediaLaunchObject *launchObject = [[MediaLaunchObject alloc] initWithLaunchSession:launchSession andMediaControl:self.mediaControl];
-        if(success){
+
+        MediaLaunchObject *launchObject =
+            [[MediaLaunchObject alloc] initWithLaunchSession:launchSession
+                                              andMediaControl:self.mediaControl];
+
+        if (success) {
             success(launchObject);
         }
     };
+
     command.callbackError = failure;
     [command send];
 }
+
+// ✅ Simplified: always use /input/dev, no /query/active-app
+- (void)sendCastStreamRequestWithQuery:(NSString *)query
+                               success:(MediaPlayerSuccessBlock)success
+                               failure:(FailureBlock)failure
+{
+    NSString *pathComponent = @"input";
+
+    NSLog(@"[CastStream][Roku] forcing path '%@' with query: %@",
+          pathComponent, query);
+
+    [self sendCastStreamToPath:pathComponent
+                         query:query
+                       success:success
+                       failure:failure];
+}
+
+
+
+
+- (void) playMediaWithMediaInfo:(MediaInfo *)mediaInfo
+                     shouldLoop:(BOOL)shouldLoop
+                        success:(MediaPlayerSuccessBlock)success
+                        failure:(FailureBlock)failure
+{
+    NSURL *iconURL;
+    if (mediaInfo.images) {
+        ImageInfo *imageInfo = [mediaInfo.images firstObject];
+        iconURL = imageInfo.url;
+    }
+
+    NSURL *mediaURL = mediaInfo.url;
+    NSString *mimeType = mediaInfo.mimeType ?: @"";
+    NSString *title     = mediaInfo.title ?: @"";
+    NSString *desc      = mediaInfo.description ?: @"";
+
+    if (!mediaURL)
+    {
+        if (failure) {
+            failure([ConnectError generateErrorWithCode:ConnectStatusCodeArgumentError
+                                             andDetails:@"You need to provide a media URL"]);
+        }
+        return;
+    }
+
+    // Decide mediaType=image|video|audio based on mimeType (fallback to video)
+    NSString *lowerMime = mimeType.lowercaseString;
+    NSString *mediaTypeParam = @"video";
+    if ([lowerMime hasPrefix:@"image/"]) {
+        mediaTypeParam = @"image";
+    } else if ([lowerMime hasPrefix:@"audio/"]) {
+        mediaTypeParam = @"audio";
+    } else if ([lowerMime hasPrefix:@"video/"]) {
+        mediaTypeParam = @"video";
+    }
+
+    // This is the URL the Roku receiver will play (HLS, MP4, MP3, etc.)
+    NSString *encodedContentId = [ConnectUtil urlEncode:mediaURL.absoluteString];
+
+    // Optional: pass title / description / icon to Roku (even if receiver ignores for now)
+    NSString *encodedTitle       = [ConnectUtil urlEncode:title];
+    NSString *encodedDescription = [ConnectUtil urlEncode:desc];
+    NSString *encodedIcon        = iconURL ? [ConnectUtil urlEncode:iconURL.absoluteString] : @"";
+
+    // Build query string (receiver currently only uses contentId/mediaType)
+    NSMutableArray<NSString *> *queryParts = [NSMutableArray new];
+    [queryParts addObject:[NSString stringWithFormat:@"contentId=%@", encodedContentId]];
+    [queryParts addObject:[NSString stringWithFormat:@"mediaType=%@", mediaTypeParam]];
+
+    if (encodedTitle.length > 0) {
+        [queryParts addObject:[NSString stringWithFormat:@"title=%@", encodedTitle]];
+    }
+    if (encodedDescription.length > 0) {
+        [queryParts addObject:[NSString stringWithFormat:@"description=%@", encodedDescription]];
+    }
+    if (encodedIcon.length > 0) {
+        [queryParts addObject:[NSString stringWithFormat:@"icon=%@", encodedIcon]];
+    }
+
+    NSString *query = [NSString stringWithFormat:@"?%@", [queryParts componentsJoinedByString:@"&"]];
+
+    // ✅ New: route through helper that picks /launch vs /input
+    [self sendCastStreamRequestWithQuery:query
+                                 success:success
+                                 failure:failure];
+}
+
 
 - (void)closeMedia:(LaunchSession *)launchSession success:(SuccessBlock)success failure:(FailureBlock)failure
 {
@@ -664,20 +712,45 @@ static NSMutableArray *registeredApps = nil;
     return CapabilityPriorityLevelHigh;
 }
 
-- (void)playWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure
-{
-    [self sendKeyCode:RokuKeyCodePlay success:success failure:failure];
+- (void)playWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure {
+    [self getPositionWithSuccess:^(NSTimeInterval position) {
+        NSUInteger positionMillis = (NSUInteger)(position * 1000);
+
+        NSString *query = [NSString stringWithFormat:@"?action=play&position=%lu", (unsigned long)positionMillis];
+
+        [self sendCastStreamRequestWithQuery:query
+                                     success:^(MediaLaunchObject *launchObject) {
+                                         if (success) success(nil);
+                                     }
+                                     failure:failure];
+    } failure:^(NSError *error) {
+        // fallback to no position
+        [self sendCastStreamPlaybackCommand:@"play" success:success failure:failure];
+    }];
 }
+
 
 - (void)pauseWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure
 {
-    // Roku does not have pause, it only has play/pause
-    [self sendKeyCode:RokuKeyCodePlay success:success failure:failure];
+    [self sendCastStreamPlaybackCommand:@"pause" success:success failure:failure];
+}
+
+- (void)sendCastStreamPlaybackCommand:(NSString *)action
+                              success:(SuccessBlock)success
+                              failure:(FailureBlock)failure
+{
+    NSString *query = [NSString stringWithFormat:@"?action=%@", [ConnectUtil urlEncode:action]];
+    [self sendCastStreamRequestWithQuery:query
+                                 success:^(MediaLaunchObject *launchObject) {
+                                     if (success) success(nil);  // ✅ Fix: pass dummy value
+                                 }
+                                 failure:failure];
+
 }
 
 - (void)stopWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure
 {
-    [self sendNotSupportedFailure:failure];
+    [self sendCastStreamPlaybackCommand:@"stop" success:success failure:failure];
 }
 
 - (void)rewindWithSuccess:(SuccessBlock)success failure:(FailureBlock)failure
@@ -819,8 +892,23 @@ static NSMutableArray *registeredApps = nil;
     return [self sendNotSupportedFailure:failure];
 }
 
-- (void)seek:(NSTimeInterval)position success:(SuccessBlock)success failure:(FailureBlock)failure { 
+- (void)seek:(NSTimeInterval)position success:(SuccessBlock)success failure:(FailureBlock)failure {
+    NSUInteger positionSeconds = (NSUInteger)(position); // use seconds
+    
+    NSLog(@"====== position: %f =========", position);
+    
+    NSString *query = [NSString stringWithFormat:@"?action=seek&position=%lu", (unsigned long)positionSeconds];
+
+    
+    NSLog(@"====== query: %@ =========", query);
+
+    [self sendCastStreamRequestWithQuery:query
+                                 success:^(MediaLaunchObject *launchObject) {
+                                     if (success) success(nil);
+                                 }
+                                 failure:failure];
 }
+
 
 
 #pragma mark - Key Control

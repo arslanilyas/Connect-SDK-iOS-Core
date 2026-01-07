@@ -579,6 +579,9 @@ static const NSInteger kValueNotFound = -1;
 - (void)seek:(NSTimeInterval)position success:(SuccessBlock)success failure:(FailureBlock)failure
 {
     NSString *timeString = [self stringForTime:position];
+    
+    NSLog(@"dlna seek position: %f, dlna time string: %@", position, timeString);
+    
     NSString *seekXML = [self commandXMLForCommandName:@"Seek"
                                       commandNamespace:kAVTransportNamespace
                                         andWriterBlock:^(XMLWriter *writer) {

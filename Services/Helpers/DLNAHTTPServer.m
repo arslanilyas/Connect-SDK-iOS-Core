@@ -66,6 +66,44 @@ static dispatch_once_t kIPTVQueuesOnce = 0;
 
 
 
+// ── Global cancel registry: sid -> cancel block (invokes the connection’s endStream)
+static NSMutableDictionary<NSString *, void(^)(void)> *gCancelBySid;
+static dispatch_queue_t gCancelQ;
+__attribute__((constructor))
+static void IPTVInitCancelRegistry(void) {
+  gCancelBySid = [NSMutableDictionary dictionary];
+  gCancelQ = dispatch_queue_create("iptv.cancel.registry.q", DISPATCH_QUEUE_SERIAL);
+}
+static void IPTVRegisterCanceller(NSString *sid, void (^cancel)(void)) {
+  if (!sid || !cancel) return;
+  dispatch_async(gCancelQ, ^{ gCancelBySid[sid] = [cancel copy]; });
+}
+static void IPTVUnregisterCanceller(NSString *sid) {
+  if (!sid) return;
+  dispatch_async(gCancelQ, ^{ [gCancelBySid removeObjectForKey:sid]; });
+}
+static void IPTVCancelNow(NSString *sid) {
+  if (!sid) return;
+  dispatch_async(gCancelQ, ^{
+    void (^cancel)(void) = gCancelBySid[sid];
+    if (cancel) cancel();
+  });
+}
+
+// === SID generation & single-tuner arbitration (file-scope) ===
+static NSMutableDictionary<NSString *, NSNumber *> *gSidGen;
+static dispatch_queue_t gSidQ;
+
+static NSString  *gActiveSid = nil;   // optional single-tuner helper
+static NSInteger  gActiveGen = 0;
+
+__attribute__((constructor))
+static void IPTVInitSIDGlobals(void) {
+  gSidGen = [NSMutableDictionary dictionary];
+  gSidQ   = dispatch_queue_create("iptv.sid.gen.q", DISPATCH_QUEUE_SERIAL);
+}
+
+
 
 // Keep a small rolling buffer to sniff MP4 atoms
 static BOOL IPTVDataContains(const NSData *d, const char *needle, size_t nlen) {
@@ -723,41 +761,37 @@ didCompleteWithError:(NSError *)error
     
     [self addFileProxyHandler];
     
+    // POST /hls/stop?sid=...  → ends the stream for that sid (generation bump + immediate cancel)
+    [self.server addHandlerForMethod:@"POST"
+                                path:@"/hls/stop"
+                        requestClass:[GCDWebServerRequest class]
+                        processBlock:^GCDWebServerResponse *(__kindof GCDWebServerRequest *req) {
+
+      // Reuse the same sid extraction logic as your GET handler
+      NSString *sid = IPTVQueryValue(req, @"sid") ?: IPTVQueryValue(req, @"session");
+      if (sid.length == 0) {
+        return [GCDWebServerDataResponse responseWithStatusCode:400];
+      }
+
+      // 1) Bump generation so any running loop observing isCancelled() will exit
+     
+      dispatch_async(gSidQ, ^{
+        NSInteger next = gSidGen[sid] ? gSidGen[sid].integerValue + 1 : 1;
+        gSidGen[sid] = @(next);
+      });
+
+      // 2) Ask the active connection (if any) to end immediately
+      IPTVCancelNow(sid);
+
+      return [GCDWebServerDataResponse responseWithStatusCode:200];
+    }];
+
+    
     [self addHLSHeadRoute];
     [self addHLSProxyTSHandler];
     
     [self addHLSProxyM3U8Handler];
     [self addHLSSegmentAndKeyHandlers];
-    
-//    [self.server addHandlerForMethod:@"GET"
-//                                path:@"/hls/playlist.ts"
-//                        requestClass:[GCDWebServerRequest class]
-//                 asyncProcessBlock:^(GCDWebServerRequest *req, GCDWebServerCompletionBlock done) {
-//      NSLog(@"✅ HLS route hit: %@", req.path);
-//      // … your HLS→TS streaming code here …
-//      // call done(response);
-//    }];
-    
-//    [self.server addHandlerForMethod:@"GET"
-//                                  path:@"/playlist"
-//                          requestClass:[GCDWebServerRequest class]
-//                          processBlock:^GCDWebServerResponse* (GCDWebServerRequest *r) {
-//        return [GCDWebServerDataResponse responseWithText:@"pong"];
-//    }];
-
-    
-//    [self.server addHandlerForMethod:@"GET"
-//                                path:@"/ping"
-//                        requestClass:[GCDWebServerRequest class]
-//                        processBlock:^GCDWebServerResponse* (GCDWebServerRequest *req) {
-//      return [GCDWebServerDataResponse responseWithText:@"pong"];
-//    }];
-    
-//    [self AddDefaultGetHandler];
-    
-//    [self addPlaylistHandler];
-    
-//    [self addSegmentHandler];
     
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString *documentsDirectory = [paths firstObject];
@@ -1018,6 +1052,74 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
 
 #pragma mark - HLS → TS proxy (Objective-C)
 
+// === sid → origin URL mapping ===
+static NSMutableDictionary<NSString *, NSString *> *gSidOrigin;
+static dispatch_once_t gSidOriginOnce;
+static dispatch_queue_t gSidOriginQ2;
+
+static void IPTVSidSetOriginURLForSid(NSString *sid, NSString *url) {
+  if (!sid.length || !url.length) return;
+
+  // Persist
+  NSString *key = [@"hls_origin_" stringByAppendingString:sid];
+  [[NSUserDefaults standardUserDefaults] setObject:url forKey:key];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+
+  // Optional in-memory cache
+  dispatch_once(&gSidOriginOnce, ^{
+    gSidOrigin   = [NSMutableDictionary dictionary];
+    gSidOriginQ2 = dispatch_queue_create("iptv.sid.origin.q", DISPATCH_QUEUE_SERIAL);
+  });
+  dispatch_async(gSidOriginQ2, ^{
+    gSidOrigin[sid] = url;
+  });
+}
+
+
+static NSString *IPTVSidOriginURLForSid(NSString *sid) {
+  if (!sid.length) return nil;
+
+  // 1) First, trust UserDefaults (Swift writes here)
+  NSString *key   = [@"hls_origin_" stringByAppendingString:sid];
+  NSString *udVal = [[NSUserDefaults standardUserDefaults] stringForKey:key];
+  if (udVal.length) {
+    return udVal;
+  }
+
+  // 2) Optional: legacy in-memory map fallback
+  dispatch_once(&gSidOriginOnce, ^{
+    gSidOrigin   = [NSMutableDictionary dictionary];
+    gSidOriginQ2 = dispatch_queue_create("iptv.sid.origin.q", DISPATCH_QUEUE_SERIAL);
+  });
+
+  __block NSString *u = nil;
+  dispatch_sync(gSidOriginQ2, ^{
+    u = gSidOrigin[sid];
+  });
+
+  return u;
+}
+
+
+static void IPTVSidClearOriginForSid(NSString *sid) {
+  if (!sid.length) return;
+
+  // Remove from UserDefaults
+  NSString *key = [@"hls_origin_" stringByAppendingString:sid];
+  [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+
+  // Remove from in-memory map
+  dispatch_once(&gSidOriginOnce, ^{
+    gSidOrigin   = [NSMutableDictionary dictionary];
+    gSidOriginQ2 = dispatch_queue_create("iptv.sid.origin.q", DISPATCH_QUEUE_SERIAL);
+  });
+  dispatch_async(gSidOriginQ2, ^{
+    [gSidOrigin removeObjectForKey:sid];
+  });
+}
+
+
+
 - (void)addHLSHeadRoute {
   [self.server addHandlerForMethod:@"HEAD"
                               path:@"/hls/playlist.ts"
@@ -1032,8 +1134,6 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
     [r setValue:@"no-cache" forAdditionalHeader:@"Pragma"];
     [r setValue:@"0" forAdditionalHeader:@"Expires"];
     [r setValue:@"keep-alive" forAdditionalHeader:@"Connection"];
-    [r setValue:@"none" forAdditionalHeader:@"Accept-Ranges"];
-    [r setValue:@"identity" forAdditionalHeader:@"Content-Encoding"];
     return r;
   }];
 }
@@ -1056,18 +1156,6 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
 
 
     // ===== Session-cancellation by sid =====
-    static NSMutableDictionary<NSString *, NSNumber *> *gSidGen;
-    static dispatch_queue_t gSidQ;
-    static dispatch_once_t onceSid;
-      
-      // Global session arbitration (single-tuner)
-      static NSString *gActiveSid = nil;
-      static NSInteger gActiveGen = 0;
-      
-    dispatch_once(&onceSid, ^{
-      gSidGen = [NSMutableDictionary dictionary];
-      gSidQ = dispatch_queue_create("iptv.sid.gen.q", DISPATCH_QUEUE_SERIAL);
-    });
 
     // sid: ?sid=..., else remote address fallback, else random
     NSString *sid = IPTVQueryValue(req, @"sid") ?: IPTVQueryValue(req, @"session");
@@ -1103,16 +1191,38 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
       return cancelled;
     };
 
-    // ===== Inputs & session =====
-    NSString *raw = IPTVQueryValue(req, @"url") ?: IPTVQueryValue(req, @"__hls_origin_url");
-    if (raw.length == 0) { NSLog(@"❌ Missing url"); done([GCDWebServerDataResponse responseWithStatusCode:400]); return; }
-    NSString *decoded = raw.stringByRemovingPercentEncoding ?: raw;
-    __block NSURL *playlistURL = [NSURL URLWithString:decoded];
-    if (!playlistURL || ![@[@"http",@"https"] containsObject:playlistURL.scheme.lowercaseString]) {
-      NSLog(@"❌ Bad origin URL: %@", decoded);
-      done([GCDWebServerDataResponse responseWithStatusCode:400]); return;
-    }
-    NSLog(@"🔗 Origin playlist URL: %@", playlistURL.absoluteString);
+      // ===== Inputs & session =====
+
+      // Whatever the TV / client is passing right now (often the proxy.m3u8)
+      NSString *rawParam = IPTVQueryValue(req, @"url") ?: IPTVQueryValue(req, @"__hls_origin_url");
+
+      // 🔹 NEW: prefer the origin URL we stored for this sid (if any)
+      NSString *savedForSid = IPTVSidOriginURLForSid(sid);   // helper you already use / or add (see below)
+
+      NSString *raw = nil;
+      if (savedForSid.length) {
+        // Use the “true” origin we stored when the session started
+        raw = savedForSid;
+      } else {
+        // Fallback to whatever was passed in the query
+        raw = rawParam;
+      }
+
+      if (raw.length == 0) {
+        NSLog(@"❌ Missing playlist url (sid=%@)", sid);
+        done([GCDWebServerDataResponse responseWithStatusCode:400]);
+        return;
+      }
+
+      NSString *decoded = raw.stringByRemovingPercentEncoding ?: raw;
+      __block NSURL *playlistURL = [NSURL URLWithString:decoded];
+      if (!playlistURL || ![@[@"http",@"https"] containsObject:playlistURL.scheme.lowercaseString]) {
+        NSLog(@"❌ Bad origin URL for sid=%@: %@", sid, decoded);
+        done([GCDWebServerDataResponse responseWithStatusCode:400]);
+        return;
+      }
+      NSLog(@"🔗 Origin playlist URL (sid=%@): %@", sid, playlistURL.absoluteString);
+
 
     NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.defaultSessionConfiguration;
     cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
@@ -1726,15 +1836,67 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
           }
           return boundary;
         };
-
+          
           void (^endStream)(void) = ^{
-                  if (!ended) {
-                    ended = YES;
-                    [session invalidateAndCancel];
-                    body([NSData data], nil); // graceful end
-                    NSLog(@"⏹️  HLS session end sid=%@ gen=%ld", sid, (long)myGen);
-                  }
-                };
+            if (ended) return;
+            ended = YES;
+
+            // Stop future scheduling immediately
+            weakPump = nil;           // <- this is enough
+            // pumpScheduled = NO;     // <- remove this line
+
+            if (!sessionClosed && session) {
+              sessionClosed = YES;
+              [session getAllTasksWithCompletionHandler:^(NSArray<NSURLSessionTask *> *tasks) {
+                for (NSURLSessionTask *t in tasks) { [t cancel]; }
+              }];
+              [session invalidateAndCancel];
+              session = nil;
+            }
+
+            curSegData = nil;
+            [memCache removeAllObjects];
+            [prefetching removeAllObjects];
+
+            if (lastKnownIsVOD) {
+              KeyCacheRemoveAll();
+            }
+
+            body([NSData data], nil);
+            IPTVUnregisterCanceller(sid);
+            dispatch_async(gSidQ, ^{ [gSidGen removeObjectForKey:sid]; });
+
+            NSLog(@"⏹️  HLS session end sid=%@ gen=%ld", sid, (long)myGen);
+          };
+
+
+
+//          void (^endStream)(void) = ^{
+//                  if (!ended) {
+//                    ended = YES;
+//                    [session invalidateAndCancel];
+//                    body([NSData data], nil); // graceful end
+//                    IPTVUnregisterCanceller(sid);
+//
+//                    NSLog(@"⏹️  HLS session end sid=%@ gen=%ld", sid, (long)myGen);
+//                  }
+//                };
+          
+          // Make a canceller that ends THIS stream immediately when /hls/stop arrives
+          void (^cancelThisStream)(void) = ^{
+            // Ensure we run on the connection’s stream queue to respect your state
+            dispatch_async(streamQ, ^{
+              // Flip generation too (belt-and-suspenders) so any future checks see cancellation
+              dispatch_async(gSidQ, ^{
+                NSInteger next = gSidGen[sid] ? gSidGen[sid].integerValue + 1 : 1;
+                gSidGen[sid] = @(next);
+              });
+              // End gracefully
+              endStream();
+            });
+          };
+          IPTVRegisterCanceller(sid, cancelThisStream);
+
 
 //          void (^endStream)(void) = ^{
 //            if (!ended) {
@@ -1849,35 +2011,36 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
                   (unsigned long)toSend, (unsigned long)curSegPos, (unsigned long)curSegData.length);
 
               if (curSegPos >= curSegData.length) {
-                NSLog(@"🏁 SEG END name=%@ seq=%ld (bytes=%lu)",
-                      lastServedName, (long)lastSeq, (unsigned long)curSegData.length);
+                  NSLog(@"🏁 SEG END name=%@ seq=%ld (bytes=%lu)",
+                        lastServedName, (long)lastSeq, (unsigned long)curSegData.length);
 
-                // Free the just-finished segment bytes right away
-                curSegData = nil;
-                curSegPos  = 0;
+                  curSegData = nil;
+                  curSegPos  = 0;
 
-                // If this was the last segment of a VOD, end gracefully
-                if (servedLastOfVOD) {
-                  NSLog(@"🏁 VOD complete — last segment drained; ending stream");
-                  endStream();
+                  if (servedLastOfVOD) {
+                    NSLog(@"🏁 VOD complete — last segment drained; ending stream");
+                    endStream();
+                    return;
+                  }
+
+                  // For VOD: move immediately to the next segment (no extra sleep).
+                  // For LIVE: you can keep a tiny delay if you want, but don’t tie it to full seg duration.
+                  NSTimeInterval boundaryDelay = lastKnownIsVOD ? 0.0 : 0.0; // or 0.1 for live if you prefer
+                  scheduleNext(boundaryDelay);
                   return;
-                }
-
-                // Boundary scheduling:
-                //  - LIVE:   immediate (0)
-                //  - VOD:    immediate (no full-seg sleep at boundary)
-                scheduleNext(0.0);
-                return;
               }
+
 
               // Still draining the same segment:
               //  - LIVE: immediate
               //  - VOD:  small per-chunk delay so the whole seg takes ~dur to send
-              if (lastKnownIsVOD) {
-                scheduleNext(vodChunkDelay(toSend, curSegData.length, lastSegDur));
-              } else {
-                scheduleNext(0.0);
-              }
+//              if (lastKnownIsVOD) {
+//                scheduleNext(vodChunkDelay(toSend, curSegData.length, lastSegDur));
+//              } else {
+//                scheduleNext(0.0);
+//              }
+              scheduleNext(vodChunkDelay(toSend, curSegData.length, MAX(lastSegDur, 0.5)));
+
               return;
 
           }
@@ -2365,28 +2528,28 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
             if (curSegPos >= curSegData.length) {
               NSLog(@"🏁 SEG END name=%@ seq=%ld (bytes=%lu)",
                     lastServedName, (long)lastSeq, (unsigned long)curSegData.length);
-              // Free immediately if the first chunk already finished the segment
               curSegData = nil;
               curSegPos  = 0;
-                
-                if (servedLastOfVOD) {
-                    NSLog(@"🏁 VOD complete — last segment drained; ending stream");
-                    endStream();
-                    return;
-                  }
-                
-                // Pace once at the boundary (LIVE=0, VOD=dur) and stop here.
-                  scheduleNext(lastKnownIsVOD ? lastSegDur : 0.0);
+
+              if (servedLastOfVOD) {
+                  NSLog(@"🏁 VOD complete — last segment drained; ending stream");
+                  endStream();
                   return;
+              }
+
+              NSTimeInterval boundaryDelay = lastKnownIsVOD ? 0.0 : 0.0; // again, tiny delay for LIVE if you want
+              scheduleNext(boundaryDelay);
+              return;
             }
 
-
-            // First chunk sent → continue draining immediately (no delayed backlog)
-            if (lastKnownIsVOD) {
-              scheduleNext(vodChunkDelay(toSend, curSegData.length, lastSegDur));
+            // First chunk sent → for VOD don’t drip, just keep going; LIVE can still be paced.
+            NSTimeInterval delay;
+            if (lastKnownIsVOD) {   
+              delay = 0.0;   // send next chunk immediately
             } else {
-              scheduleNext(0.0);
+              delay = vodChunkDelay(toSend, curSegData.length, lastSegDur);
             }
+            scheduleNext(delay);
 
 
 
@@ -2408,8 +2571,6 @@ static NSDictionary *IPTVQuickISOBMFFProbe(NSData *initData) {
     [resp setValue:@"no-cache" forAdditionalHeader:@"Pragma"];
     [resp setValue:@"0" forAdditionalHeader:@"Expires"];
     [resp setValue:@"keep-alive" forAdditionalHeader:@"Connection"];
-    [resp setValue:@"none" forAdditionalHeader:@"Accept-Ranges"];
-    [resp setValue:@"identity" forAdditionalHeader:@"Content-Encoding"];
 
     done(resp);
   }];
@@ -2553,16 +2714,41 @@ static BOOL IPTVParseRangeHeader(NSDictionary *headers,
     __strong typeof(weakSelf) self = weakSelf;
     if (!self) { done([GCDWebServerDataResponse responseWithStatusCode:503]); return; }
 
-    NSString *host = [self getIPAddress];
+      NSString *host = [self getIPAddress];
 
-    // 1) Validate origin URL
-    NSString *raw = IPTVQueryValue(req, @"url");
-    if (raw.length == 0) { done([GCDWebServerDataResponse responseWithStatusCode:400]); return; }
-    NSString *decoded = raw.stringByRemovingPercentEncoding ?: raw;
-    NSURL *origin = [NSURL URLWithString:decoded];
-    if (!origin || ![@[@"http", @"https"] containsObject:origin.scheme.lowercaseString]) {
-      done([GCDWebServerDataResponse responseWithStatusCode:400]); return;
-    }
+      // ===== Resolve sid and origin URL (sid-first, then query) =====
+      NSString *sid = IPTVQueryValue(req, @"sid") ?: IPTVQueryValue(req, @"session");
+      if (sid.length == 0) {
+        // Fallback: tie this request to remote address or a random sid,
+        // but in your current flow you SHOULD be sending ?sid=...
+        NSString *remoteAddr = nil;
+        @try { remoteAddr = [req valueForKey:@"remoteAddressString"]; } @catch (__unused NSException *e) {}
+        sid = remoteAddr.length ? [@"tv-" stringByAppendingString:remoteAddr] : [NSUUID UUID].UUIDString;
+      }
+
+      // Whatever the client passed (legacy path)
+      NSString *rawParam = IPTVQueryValue(req, @"url") ?: IPTVQueryValue(req, @"__hls_origin_url");
+
+      // Prefer the origin we stored for this sid (same helper as TS handler)
+      NSString *savedForSid = IPTVSidOriginURLForSid(sid);
+
+      NSString *raw = savedForSid.length ? savedForSid : rawParam;
+      if (raw.length == 0) {
+        NSLog(@"❌ M3U8: Missing origin URL for sid=%@", sid);
+        done([GCDWebServerDataResponse responseWithStatusCode:400]);
+        return;
+      }
+
+      NSString *decoded = raw.stringByRemovingPercentEncoding ?: raw;
+      NSURL *origin = [NSURL URLWithString:decoded];
+      if (!origin || ![@[@"http", @"https"] containsObject:origin.scheme.lowercaseString]) {
+        NSLog(@"❌ M3U8: Bad origin URL for sid=%@: %@", sid, decoded);
+        done([GCDWebServerDataResponse responseWithStatusCode:400]);
+        return;
+      }
+
+      NSLog(@"🔗 M3U8 origin for sid=%@: %@", sid, origin.absoluteString);
+
 
     // 2) Session w/ UA/Referer/Cookie
     NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.defaultSessionConfiguration;
@@ -3226,9 +3412,7 @@ static BOOL IPTVParseRangeHeader(NSDictionary *headers,
     _server = nil;
 }
 
-/// Returns a service subscription key for the given URL. Different service URLs
-/// should produce different keys by extracting the relative path, e.g.:
-/// "http://example.com:8888/foo/bar?q=a#abc" => "/foo/bar?q=a#abc"
+
 - (NSString *)serviceSubscriptionKeyForURL:(NSURL *)url {
     NSString *resourceSpecifier = url.absoluteURL.resourceSpecifier;
     NSRange relativePathStartRange = [resourceSpecifier rangeOfString:@"/"
@@ -3359,27 +3543,6 @@ static BOOL IPTVParseRangeHeader(NSDictionary *headers,
 {
     
     return GCDWebServerGetPrimaryIPAddress(false);
-//    NSString *address = @"error";
-//    struct ifaddrs *interfaces = NULL;
-//    struct ifaddrs *temp_addr = NULL;
-//    int success = 0;
-//    
-//    success = getifaddrs(&interfaces);
-//    if (success == 0)
-//    {
-//        temp_addr = interfaces;
-//        while(temp_addr != NULL)
-//        {
-//            if(temp_addr->ifa_addr->sa_family == AF_INET)
-//            {
-//                address = [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr)];
-//            }
-//            temp_addr = temp_addr->ifa_next;
-//        }
-//    }
-//    
-//    freeifaddrs(interfaces);
-//    return address;
 }
 
 static inline BOOL WebServerIsValidByteRange(NSRange range) {
